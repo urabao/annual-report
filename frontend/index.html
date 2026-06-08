@@ -1,0 +1,1025 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-[#FBFBF9] text-[#1C293C]">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Indian Annual Report Financial Statement Extractor</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    
+    <!-- React & Babel CDNs -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- PDF.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+                        display: ['"Space Grotesk"', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: "Plus Jakarta Sans", sans-serif;
+            background-color: #FBFBF9;
+            color: #1C293C;
+            transition: background-color 0.2s ease, color 0.2s ease;
+        }
+        
+        html.dark body {
+            background-color: #121212;
+            color: #F3F4F6;
+        }
+        
+        /* Neobrutalism shadow helpers */
+        .neo-shadow-sm {
+            box-shadow: 2px 2px 0px 0px #1C293C;
+            transition: box-shadow 0.2s ease;
+        }
+        .neo-shadow-md {
+            box-shadow: 4px 4px 0px 0px #1C293C;
+            transition: box-shadow 0.2s ease;
+        }
+        .neo-shadow-lg {
+            box-shadow: 8px 8px 0px 0px #1C293C;
+            transition: box-shadow 0.2s ease;
+        }
+        
+        html.dark .neo-shadow-sm {
+            box-shadow: 2px 2px 0px 0px #FDC800;
+        }
+        html.dark .neo-shadow-md {
+            box-shadow: 4px 4px 0px 0px #FDC800;
+        }
+        html.dark .neo-shadow-lg {
+            box-shadow: 8px 8px 0px 0px #FDC800;
+        }
+        
+        /* Animated pulsing effect */
+        .pulsing {
+            animation: pulse 1.5s infinite ease-in-out;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col justify-between overflow-x-hidden p-4 md:p-8">
+    <div id="root" class="flex-grow flex flex-col max-w-7xl w-full mx-auto justify-center z-10"></div>
+
+    <!-- React Application -->
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const STATEMENTS = {
+            consolidated_balance_sheet: "Consolidated Balance Sheet",
+            standalone_balance_sheet: "Standalone Balance Sheet",
+            consolidated_pl: "Consolidated Profit & Loss",
+            standalone_pl: "Standalone Profit & Loss",
+            consolidated_cash_flow: "Consolidated Cash Flow",
+            standalone_cash_flow: "Standalone Cash Flow",
+            mda: "Management Discussion & Analysis",
+            notes_to_accounts: "Notes to Accounts",
+            directors_report: "Director/CEO Report",
+            auditors_report: "Auditor's Report"
+        };
+
+        function App() {
+            // Dark Mode state & persistence
+            const [darkMode, setDarkMode] = useState(() => {
+                const saved = localStorage.getItem('darkMode');
+                if (saved !== null) return saved === 'true';
+                return window.matchMedia('(prefers-color-scheme: dark)').matches;
+            });
+
+            useEffect(() => {
+                localStorage.setItem('darkMode', darkMode);
+                if (darkMode) {
+                    document.documentElement.classList.add('dark');
+                } else {
+                    document.documentElement.classList.remove('dark');
+                }
+            }, [darkMode]);
+
+            // Stages: 'upload' | 'processing' | 'toc_preview' | 'extracting' | 'completed' | 'failed'
+            const [stage, setStage] = useState('upload');
+            const [jobId, setJobId] = useState(null);
+            const [uploadProgress, setUploadProgress] = useState(0);
+            const [jobProgress, setJobProgress] = useState(0);
+            const [statusDetail, setStatusDetail] = useState('');
+            const [errorMsg, setErrorMsg] = useState('');
+            
+            // TOC Details
+            const [totalPages, setTotalPages] = useState(0);
+            const [offset, setOffset] = useState(0);
+            const [scale, setScale] = useState(1.0);
+            const [tocEntries, setTocEntries] = useState([]);
+            const [mappings, setMappings] = useState({});
+            
+            // UI state
+            const [searchQuery, setSearchQuery] = useState('');
+            const [selectedStatementKey, setSelectedStatementKey] = useState('consolidated_balance_sheet');
+            
+            const [previewPage, setPreviewPage] = useState(1);
+            const [showPreviewModal, setShowPreviewModal] = useState(false);
+            const canvasRef = useRef(null);
+            
+            // Cutting Tool State
+            const [cropBoxes, setCropBoxes] = useState({}); // { [statementKey]: { [pageNumber]: [x0, y0, x1, y1] } }
+            const [isDrawingCrop, setIsDrawingCrop] = useState(false);
+            const [cropStart, setCropStart] = useState({x: 0, y: 0});
+            const [currentCrop, setCurrentCrop] = useState(null);
+            const previewImgRef = useRef(null);
+            
+            // Post-Extraction Preview State
+            const [extractedFiles, setExtractedFiles] = useState([]);
+            const [selectedPreviewFile, setSelectedPreviewFile] = useState(null);
+            const [mdData, setMdData] = useState(null);
+            
+            // Flagging Feature State
+            const [showFlagModal, setShowFlagModal] = useState(false);
+            const [flagIssueDesc, setFlagIssueDesc] = useState('');
+            const [flagSuccessMsg, setFlagSuccessMsg] = useState('');
+            
+            const fileInputRef = useRef(null);
+            const isPollingRef = useRef(false);
+
+            // Fetch Job Status Poller
+            const startPolling = (id) => {
+                if (isPollingRef.current) return;
+                isPollingRef.current = true;
+                
+                const poll = async () => {
+                    if (!isPollingRef.current) return;
+                    try {
+                        const res = await fetch(`/status/${id}`);
+                        if (!res.ok) throw new Error('Failed to retrieve status');
+                        const data = await res.json();
+                        
+                        setJobProgress(data.progress);
+                        
+                        if (data.status === 'parsing_toc') {
+                            setStage('processing');
+                            setStatusDetail('Analyzing PDF text layer & layout coordinates...');
+                            setTimeout(poll, 1500);
+                        } else if (data.status === 'ready') {
+                            isPollingRef.current = false;
+                            setJobId(id);
+                            fetchToc(id);
+                        } else if (data.status === 'extracting') {
+                            setStage('extracting');
+                            setStatusDetail('Extracting statement page ranges & compiling ZIP archive...');
+                            setTimeout(poll, 1500);
+                        } else if (data.status === 'completed') {
+                            isPollingRef.current = false;
+                            setExtractedFiles(data.extracted_files || []);
+                            
+                            // Auto-select the first PDF or the XLSX
+                            const firstFile = (data.extracted_files || []).find(f => f.endsWith('.pdf')) || (data.extracted_files || [])[0];
+                            if (firstFile) loadPreview(firstFile, id);
+                            
+                            setStage('completed');
+                        } else if (data.status === 'failed') {
+                            isPollingRef.current = false;
+                            setStage('failed');
+                            setErrorMsg(data.error || 'Processing failed.');
+                        } else {
+                            setTimeout(poll, 1500);
+                        }
+                    } catch (err) {
+                        console.error(err);
+                        setTimeout(poll, 3000);
+                    }
+                };
+                poll();
+            };
+
+            // Fetch TOC structure and auto-mappings
+            const fetchToc = async (id) => {
+                try {
+                    const res = await fetch(`/toc/${id}`);
+                    if (!res.ok) throw new Error('Failed to load TOC data');
+                    const data = await res.json();
+                    
+                    setTotalPages(data.total_pages);
+                    setOffset(data.offset);
+                    setScale(data.scale || 1.0);
+                    setTocEntries(data.toc);
+                    
+                    // Initialise working mappings
+                    const initialMappings = {};
+                    Object.keys(STATEMENTS).forEach(key => {
+                        if (data.mappings && data.mappings[key]) {
+                            initialMappings[key] = {
+                                matched: true,
+                                start: data.mappings[key].start_page,
+                                end: data.mappings[key].end_page
+                            };
+                        } else {
+                            initialMappings[key] = {
+                                matched: false,
+                                start: '',
+                                end: ''
+                            };
+                        }
+                    });
+                    setMappings(initialMappings);
+                    
+                    // Auto-select first missing statement or default to consolidated balance sheet
+                    const keys = Object.keys(STATEMENTS);
+                    const firstFound = keys.find(k => initialMappings[k].matched) || keys[0];
+                    setSelectedStatementKey(firstFound);
+                    
+                    setStage('toc_preview');
+                } catch (err) {
+                    setStage('failed');
+                    setErrorMsg(err.message || 'Failed to fetch PDF details.');
+                }
+            };
+
+            // File Upload Handler (Progress tracked)
+            const uploadFile = (file) => {
+                if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+                    setErrorMsg('Unsupported file type. Please upload a PDF annual report.');
+                    setStage('failed');
+                    return;
+                }
+                
+                setStage('processing');
+                setUploadProgress(0);
+                setJobProgress(0);
+                setStatusDetail('Uploading report to server...');
+                setErrorMsg('');
+                
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/upload');
+                
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) {
+                        const pct = Math.round((e.loaded / e.total) * 100);
+                        setUploadProgress(pct);
+                        // Limit UI upload stage progress to 10%
+                        setJobProgress(Math.round(pct * 0.1));
+                    }
+                };
+                
+                xhr.onload = () => {
+                    if (xhr.status === 200) {
+                        try {
+                            const res = JSON.parse(xhr.responseText);
+                            setStatusDetail('Upload complete. Parsing document bookmarks and table of contents...');
+                            startPolling(res.job_id);
+                            setJobId(res.job_id);
+                        } catch (err) {
+                            setErrorMsg('Failed to read upload response.');
+                            setStage('failed');
+                        }
+                    } else {
+                        try {
+                            const res = JSON.parse(xhr.responseText);
+                            setErrorMsg(res.detail || 'Upload failed.');
+                        } catch (e) {
+                            setErrorMsg(`Server returned status ${xhr.status}`);
+                        }
+                        setStage('failed');
+                    }
+                };
+                
+                xhr.onerror = () => {
+                    setErrorMsg('Network error occurred during upload.');
+                    setStage('failed');
+                };
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                xhr.send(formData);
+            };
+
+            // Drag-and-drop Events
+            const handleDrag = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            };
+
+            const handleDrop = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                    uploadFile(e.dataTransfer.files[0]);
+                }
+            };
+
+            const handleFileSelect = (e) => {
+                if (e.target.files && e.target.files[0]) {
+                    uploadFile(e.target.files[0]);
+                }
+            };
+
+            // Trigger extraction request
+            const triggerExtraction = async () => {
+                setStage('extracting');
+                setJobProgress(75);
+                setStatusDetail('Triggering PDF extraction slices...');
+                
+                try {
+                    const formatted = {};
+                    Object.keys(mappings).forEach(key => {
+                        const val = mappings[key];
+                        if (val.start && val.end) {
+                            formatted[key] = {
+                                pages: [parseInt(val.start), parseInt(val.end)],
+                                crop: cropBoxes[key] || null
+                            };
+                        }
+                    });
+                    
+                    const res = await fetch(`/extract/${jobId}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ mappings: formatted })
+                    });
+                    
+                    if (!res.ok) throw new Error('Extraction failed.');
+                    startPolling(jobId);
+                } catch (err) {
+                    setStage('failed');
+                    setErrorMsg(err.message || 'Failed to extract statements.');
+                }
+            };
+            
+            const loadPreview = async (filename, jId = jobId) => {
+                setSelectedPreviewFile(filename);
+                if (filename.endsWith('.md')) {
+                    try {
+                        const res = await fetch(`/output/${jId}/${filename}`);
+                        const text = await res.text();
+                        setMdData(text);
+                    } catch (e) {
+                        console.error(e);
+                        setMdData("Error loading Markdown");
+                    }
+                } else {
+                    setMdData(null);
+                }
+            };
+
+            const submitFlag = async () => {
+                if (!flagIssueDesc.trim() || !selectedPreviewFile) return;
+                try {
+                    const res = await fetch(`/flag/${jobId}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filename: selectedPreviewFile, issue: flagIssueDesc })
+                    });
+                    if (res.ok) {
+                        setFlagSuccessMsg('Issue reported successfully!');
+                        setFlagIssueDesc('');
+                        setTimeout(() => {
+                            setFlagSuccessMsg('');
+                            setShowFlagModal(false);
+                        }, 2000);
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+            };
+
+            // Sync preview page with selected statement
+            useEffect(() => {
+                if (stage === 'toc_preview' && selectedStatementKey) {
+                    const start = mappings[selectedStatementKey]?.start;
+                    if (start) setPreviewPage(start);
+                }
+            }, [selectedStatementKey, mappings, stage]);
+
+            // Crop Box Drawing Handlers
+            const handleCropMouseDown = (e) => {
+                e.preventDefault();
+                if (!previewImgRef.current) return;
+                const rect = previewImgRef.current.getBoundingClientRect();
+                const xPct = (e.clientX - rect.left) / rect.width;
+                const yPct = (e.clientY - rect.top) / rect.height;
+                
+                setIsDrawingCrop(true);
+                setCropStart({x: xPct, y: yPct});
+                setCurrentCrop([xPct, yPct, xPct, yPct]);
+            };
+
+            const handleCropMouseMove = (e) => {
+                if (!isDrawingCrop || !previewImgRef.current) return;
+                const rect = previewImgRef.current.getBoundingClientRect();
+                let x = e.clientX - rect.left;
+                let y = e.clientY - rect.top;
+                
+                // Clamp
+                x = Math.max(0, Math.min(x, rect.width));
+                y = Math.max(0, Math.min(y, rect.height));
+                
+                const xPct = x / rect.width;
+                const yPct = y / rect.height;
+                
+                setCurrentCrop([
+                    Math.min(cropStart.x, xPct),
+                    Math.min(cropStart.y, yPct),
+                    Math.max(cropStart.x, xPct),
+                    Math.max(cropStart.y, yPct)
+                ]);
+            };
+
+            const handleCropMouseUp = () => {
+                if (isDrawingCrop && currentCrop) {
+                    setIsDrawingCrop(false);
+                    // Save if valid size
+                    if (currentCrop[2] - currentCrop[0] > 0.02 && currentCrop[3] - currentCrop[1] > 0.02) {
+                        setCropBoxes(prev => {
+                            const newB = {...prev};
+                            if (!newB[selectedStatementKey]) newB[selectedStatementKey] = {};
+                            newB[selectedStatementKey] = {...newB[selectedStatementKey], [previewPage]: currentCrop};
+                            return newB;
+                        });
+                    } else {
+                        setCurrentCrop(null);
+                    }
+                }
+            };
+
+            const clearCurrentCrop = () => {
+                setCropBoxes(prev => {
+                    if (!prev[selectedStatementKey] || !prev[selectedStatementKey][previewPage]) return prev;
+                    const newB = {...prev};
+                    const stmtCrops = {...newB[selectedStatementKey]};
+                    delete stmtCrops[previewPage];
+                    newB[selectedStatementKey] = stmtCrops;
+                    return newB;
+                });
+                setCurrentCrop(null);
+            };
+
+            // PDF.js Previewer Logic (for modal)
+            useEffect(() => {
+                if (showPreviewModal && canvasRef.current) {
+                    renderPdfPage(previewPage);
+                }
+            }, [previewPage, showPreviewModal]);
+
+            const renderPdfPage = async (pageNum) => {
+                try {
+                    const loadingTask = pdfjsLib.getDocument(`/output/${jobId}/source.pdf`);
+                    const pdfDoc = await loadingTask.promise;
+                    // physical page to PDF.js page (1-indexed)
+                    const pjsPage = Math.max(1, Math.min(pageNum, pdfDoc.numPages));
+                    const page = await pdfDoc.getPage(pjsPage);
+                    
+                    const canvas = canvasRef.current;
+                    if (!canvas) return;
+                    const ctx = canvas.getContext('2d');
+                    
+                    const viewport = page.getViewport({ scale: 1.2 });
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+                    
+                    const renderContext = {
+                        canvasContext: ctx,
+                        viewport: viewport
+                    };
+                    await page.render(renderContext).promise;
+                } catch (err) {
+                    console.error("PDF Render Error:", err);
+                }
+            };
+
+            const openPreview = (e, pageNum) => {
+                e.stopPropagation();
+                setPreviewPage(pageNum);
+                setShowPreviewModal(true);
+            };
+
+            // Mapping Edit Handlers
+            const updateMappingVal = (key, field, val) => {
+                setMappings(prev => {
+                    const updated = { ...prev };
+                    updated[key] = {
+                        ...updated[key],
+                        [field]: val,
+                        matched: (field === 'start' ? val : updated[key].start) !== '' || (field === 'end' ? val : updated[key].end) !== ''
+                    };
+                    return updated;
+                });
+            };
+
+            const applyTocEntryToMapping = (entry) => {
+                const physicalPage = Math.floor(entry.page_number * scale) + offset;
+                updateMappingVal(selectedStatementKey, 'start', physicalPage);
+                // Also auto-suggest an end page (physicalPage + 2 as buffer)
+                updateMappingVal(selectedStatementKey, 'end', Math.min(totalPages, physicalPage + 2));
+            };
+
+            // Filter TOC Table
+            const filteredToc = tocEntries.filter(entry => 
+                entry.section_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                String(entry.page_number).includes(searchQuery)
+            );
+
+            return (
+                <div class="flex-grow flex flex-col justify-center h-full">
+                    {/* Header */}
+                    <header class="flex justify-between items-center mb-8 border-b-4 border-[#1C293C] dark:border-white pb-5">
+                        <div class="flex items-center gap-3">
+                            <div class="bg-[#FDC800] p-3 border-4 border-[#1C293C] dark:border-white rounded-xl neo-shadow-sm">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-6 h-6 text-[#1C293C]">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h1 class="font-display font-black text-3xl tracking-tight text-[#1C293C] dark:text-white">FinReport<span class="bg-[#FDC800] px-1 py-0.5 border-2 border-transparent text-[#1C293C]">Extract</span></h1>
+                                <p class="text-xs font-bold text-[#1C293C]/70 dark:text-slate-400">Indian Company Annual Report PDF Splitter</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            {jobId && (
+                                <span class="text-xs font-bold bg-white dark:bg-[#1E1E1E] text-[#1C293C] dark:text-white px-3 py-1.5 rounded-lg border-2 border-[#1C293C] dark:border-white neo-shadow-sm">
+                                    Job: {jobId.slice(0, 8)}
+                                </span>
+                            )}
+                            <button
+                                onClick={() => setDarkMode(!darkMode)}
+                                class="p-2.5 bg-white dark:bg-[#1E1E1E] border-2 border-[#1C293C] dark:border-white rounded-lg neo-shadow-sm text-[#1C293C] dark:text-white hover:bg-[#FDC800]/10 active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all duration-100"
+                                aria-label="Toggle theme"
+                            >
+                                {darkMode ? (
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-5 h-5">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
+                                    </svg>
+                                ) : (
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-5 h-5">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+                                    </svg>
+                                )}
+                            </button>
+                        </div>
+                    </header>
+
+                    {/* UPLOAD VIEW */}
+                    {stage === 'upload' && (
+                        <div class="max-w-2xl mx-auto w-full my-auto">
+                            <div 
+                                onDragEnter={handleDrag}
+                                onDragOver={handleDrag}
+                                onDrop={handleDrop}
+                                onClick={() => fileInputRef.current.click()}
+                                class="bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-2xl p-12 text-center cursor-pointer neo-shadow-lg hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[10px_10px_0px_0px_#1C293C] dark:hover:shadow-[10px_10px_0px_0px_#FDC800] active:translate-x-[2px] active:translate-y-[2px] active:shadow-[6px_6px_0px_0px_#1C293C] dark:active:shadow-[6px_6px_0px_0px_#FDC800] transition-all duration-150"
+                            >
+                                <input 
+                                    type="file" 
+                                    ref={fileInputRef} 
+                                    onChange={handleFileSelect} 
+                                    accept="application/pdf" 
+                                    class="hidden" 
+                                
+                                />
+                                <div class="bg-[#FDC800] p-5 rounded-xl mb-5 border-4 border-[#1C293C] dark:border-white neo-shadow-sm inline-block mx-auto">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-10 h-10 text-[#1C293C]">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z" />
+                                    </svg>
+                                </div>
+                                <h3 class="font-display font-black text-2xl text-[#1C293C] dark:text-white mb-2 uppercase">Upload Annual Report PDF</h3>
+                                <p class="text-sm font-bold text-[#1C293C]/70 dark:text-slate-400 mb-8 max-w-sm mx-auto">Drag and drop your company report here, or click to browse files (Up to 200MB)</p>
+                                <div class="flex gap-2.5 justify-center flex-wrap">
+                                    <span class="text-xs bg-[#432DD7] text-white px-3 py-1.5 rounded-lg border-2 border-[#1C293C] dark:border-white neo-shadow-sm font-bold">Reliance Industries</span>
+                                    <span class="text-xs bg-[#FDC800] text-[#1C293C] px-3 py-1.5 rounded-lg border-2 border-[#1C293C] dark:border-white neo-shadow-sm font-bold">TCS / Infosys</span>
+                                    <span class="text-xs bg-white dark:bg-[#1E1E1E] text-[#1C293C] dark:text-white px-3 py-1.5 rounded-lg border-2 border-[#1C293C] dark:border-white neo-shadow-sm font-bold">Tata Motors</span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* PROCESSING / EXTRACTION VIEW */}
+                    {(stage === 'processing' || stage === 'extracting') && (
+                        <div class="max-w-md mx-auto w-full my-auto text-center bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-2xl p-10 neo-shadow-lg">
+                            <div class="relative w-24 h-24 mx-auto mb-8 bg-[#FDC800] border-4 border-[#1C293C] dark:border-white rounded-full flex items-center justify-center neo-shadow-sm animate-bounce">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-10 h-10 text-[#1C293C]">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25" />
+                                </svg>
+                            </div>
+                            <h3 class="font-display font-black text-xl text-[#1C293C] dark:text-white mb-2 uppercase">
+                                {stage === 'processing' ? 'Processing Document' : 'Extracting Pages'}
+                            </h3>
+                            <p class="text-xs font-bold text-[#1C293C]/70 dark:text-slate-400 mb-6 pulsing h-8">{statusDetail}</p>
+                            
+                            <div class="w-full bg-[#FBFBF9] dark:bg-[#121212] border-4 border-[#1C293C] dark:border-white h-6 rounded-xl overflow-hidden mb-2 neo-shadow-sm p-0.5">
+                                <div 
+                                    class="bg-[#FDC800] h-full rounded-md transition-all duration-300 border-r-2 border-[#1C293C] dark:border-white"
+                                    style={{ width: `${jobProgress}%` }}
+                                ></div>
+                            </div>
+                            <div class="flex justify-between items-center text-xs font-bold text-[#1C293C] dark:text-white mt-3">
+                                <span>{stage === 'processing' && uploadProgress < 100 ? 'Uploading...' : 'Analyzing layout...'}</span>
+                                <span>{jobProgress}%</span>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* TOC PREVIEW & ADJUSTER STAGE */}
+                    {stage === 'toc_preview' && (
+                        <div class="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-8 my-auto items-stretch h-[calc(100vh-200px)] min-h-[550px]">
+                            {/* Left Column: Target Mappings Adjuster */}
+                            <div class="lg:col-span-3 flex flex-col justify-between bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-2xl p-4 neo-shadow-lg overflow-hidden">
+                                <div class="flex-grow overflow-y-auto pr-1">
+                                    <div class="mb-4">
+                                        <h3 class="font-display font-black text-lg text-[#1C293C] dark:text-white uppercase mb-1">Align Statements</h3>
+                                    </div>
+
+                                    {/* Offset display card */}
+                                    <div class="bg-[#FDC800]/10 dark:bg-[#FDC800]/5 border-4 border-[#1C293C] dark:border-white rounded-xl p-2 mb-4 flex items-center justify-between neo-shadow-sm">
+                                        <div>
+                                            <span class="text-[10px] font-black text-[#1c293c] dark:text-white uppercase tracking-wider block">Offset</span>
+                                        </div>
+                                        <div class="text-sm font-black font-display text-[#1C293C] bg-[#FDC800] px-2 py-1 rounded border-2 border-[#1C293C] dark:border-white neo-shadow-sm">
+                                            {offset >= 0 ? `+${offset}` : offset}
+                                        </div>
+                                    </div>
+
+                                    {/* Mappings Form */}
+                                    <div class="space-y-3">
+                                        {Object.keys(STATEMENTS).map(key => {
+                                            const isSelected = selectedStatementKey === key;
+                                            const mapping = mappings[key];
+                                            const hasCrop = cropBoxes[key] && Object.keys(cropBoxes[key]).length > 0;
+                                            
+                                            return (
+                                                <div 
+                                                    key={key} 
+                                                    onClick={() => setSelectedStatementKey(key)}
+                                                    class={`p-3 rounded-xl border-4 transition-all duration-150 cursor-pointer ${
+                                                        isSelected 
+                                                            ? 'bg-[#FDC800]/10 dark:bg-[#FDC800]/5 border-[#1C293C] dark:border-white neo-shadow-sm' 
+                                                            : 'bg-[#FBFBF9] dark:bg-[#121212] border-slate-200 dark:border-zinc-800 hover:border-slate-400 dark:hover:border-slate-500'
+                                                    }`}
+                                                >
+                                                    <div class="flex justify-between items-center mb-2">
+                                                        <span class="text-xs font-black text-[#1C293C] dark:text-white">{STATEMENTS[key]}</span>
+                                                        {mapping.matched ? (
+                                                            <span class="text-[9px] bg-[#16A34A] text-white border-2 border-[#1C293C] dark:border-white px-1.5 py-0.5 rounded-full font-bold">✓</span>
+                                                        ) : (
+                                                            <span class="text-[9px] bg-[#D97706] text-white border-2 border-[#1C293C] dark:border-white px-1.5 py-0.5 rounded-full font-bold">!</span>
+                                                        )}
+                                                    </div>
+                                                    
+                                                    {hasCrop && (
+                                                        <div class="mb-2">
+                                                            <span class="text-[9px] bg-[#3B82F6] text-white px-1.5 py-0.5 rounded font-bold">Crop Active</span>
+                                                        </div>
+                                                    )}
+                                                    
+                                                    <div class="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                                                        <div class="flex-grow">
+                                                            <input 
+                                                                type="number" 
+                                                                min="1" 
+                                                                max={totalPages}
+                                                                value={mapping.start} 
+                                                                onChange={(e) => updateMappingVal(key, 'start', e.target.value)}
+                                                                placeholder="Start"
+                                                                class="w-full bg-white dark:bg-[#121212] border-2 border-[#1C293C] dark:border-white focus:bg-[#FDC800]/10 dark:focus:bg-[#FDC800]/5 rounded px-1.5 py-1 text-xs text-[#1C293C] dark:text-white font-bold outline-none"
+                                                            />
+                                                        </div>
+                                                        <div class="text-[#1C293C] dark:text-white font-black text-[10px]">to</div>
+                                                        <div class="flex-grow">
+                                                            <input 
+                                                                type="number" 
+                                                                min="1" 
+                                                                max={totalPages}
+                                                                value={mapping.end} 
+                                                                onChange={(e) => updateMappingVal(key, 'end', e.target.value)}
+                                                                placeholder="End"
+                                                                class="w-full bg-white dark:bg-[#121212] border-2 border-[#1C293C] dark:border-white focus:bg-[#FDC800]/10 dark:focus:bg-[#FDC800]/5 rounded px-1.5 py-1 text-xs text-[#1C293C] dark:text-white font-bold outline-none"
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                <button 
+                                    onClick={triggerExtraction}
+                                    class="w-full bg-[#FDC800] hover:bg-[#ffe14d] active:bg-[#e6b600] text-[#1C293C] font-display font-black text-xs py-3 border-4 border-[#1C293C] dark:border-white rounded-xl neo-shadow-md transition-all duration-100 mt-4 uppercase"
+                                >
+                                    Extract as PDF & Markdown
+                                </button>
+                            </div>
+
+                            {/* Middle Column: Page Preview & Crop Tool */}
+                            <div class="lg:col-span-5 flex flex-col bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-2xl p-4 neo-shadow-lg overflow-hidden relative select-none">
+                                <div class="flex justify-between items-center mb-2">
+                                    <h3 class="font-display font-black text-lg text-[#1C293C] dark:text-white uppercase">Preview: Page {previewPage}</h3>
+                                    {cropBoxes[selectedStatementKey]?.[previewPage] && (
+                                        <button onClick={clearCurrentCrop} class="text-xs bg-red-500 text-white px-2 py-1 rounded font-bold border-2 border-white">Clear Crop</button>
+                                    )}
+                                </div>
+                                <div class="text-xs text-slate-500 mb-2">
+                                    Click and drag on the image below to restrict extraction to a specific region (for {STATEMENTS[selectedStatementKey]}).
+                                </div>
+                                
+                                <div class="flex-grow flex justify-center items-center overflow-hidden bg-slate-100 dark:bg-zinc-800 rounded border-2 border-slate-300 dark:border-zinc-700 relative">
+                                    {previewPage ? (
+                                        <div class="relative max-h-full max-w-full">
+                                            <img 
+                                                ref={previewImgRef}
+                                                src={`/page_preview/${jobId}/${previewPage}`} 
+                                                alt={`Preview of Page ${previewPage}`} 
+                                                class="object-contain max-h-[calc(100vh-350px)] max-w-full cursor-crosshair border border-slate-300 dark:border-slate-700"
+                                                draggable="false"
+                                                onMouseDown={handleCropMouseDown}
+                                                onMouseMove={handleCropMouseMove}
+                                                onMouseUp={handleCropMouseUp}
+                                                onMouseLeave={handleCropMouseUp}
+                                            />
+                                            
+                                            {/* Render active or saved crop box */}
+                                            {(currentCrop || cropBoxes[selectedStatementKey]?.[previewPage]) && (
+                                                <div 
+                                                    class="absolute border-2 border-blue-500 bg-blue-500/20 pointer-events-none"
+                                                    style={{
+                                                        left: `${((currentCrop || cropBoxes[selectedStatementKey]?.[previewPage])[0]) * 100}%`,
+                                                        top: `${((currentCrop || cropBoxes[selectedStatementKey]?.[previewPage])[1]) * 100}%`,
+                                                        width: `${((currentCrop || cropBoxes[selectedStatementKey]?.[previewPage])[2] - (currentCrop || cropBoxes[selectedStatementKey]?.[previewPage])[0]) * 100}%`,
+                                                        height: `${((currentCrop || cropBoxes[selectedStatementKey]?.[previewPage])[3] - (currentCrop || cropBoxes[selectedStatementKey]?.[previewPage])[1]) * 100}%`
+                                                    }}
+                                                ></div>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <div class="text-slate-400 font-bold">Select a page to preview</div>
+                                    )}
+                                </div>
+                                
+                                <div class="flex justify-between items-center mt-3">
+                                    <button 
+                                        onClick={() => setPreviewPage(Math.max(1, previewPage - 1))}
+                                        class="bg-slate-200 dark:bg-zinc-700 text-[#1C293C] dark:text-white px-3 py-1 rounded font-bold"
+                                    >← Prev</button>
+                                    <button 
+                                        onClick={() => setPreviewPage(Math.min(totalPages, previewPage + 1))}
+                                        class="bg-slate-200 dark:bg-zinc-700 text-[#1C293C] dark:text-white px-3 py-1 rounded font-bold"
+                                    >Next →</button>
+                                </div>
+                            </div>
+
+                            {/* Right Column: Full Table of Contents entries list */}
+                            <div class="lg:col-span-4 flex flex-col justify-between bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-2xl p-4 neo-shadow-lg overflow-hidden">
+                                <div class="flex justify-between items-center mb-5 flex-wrap gap-4">
+                                    <div>
+                                        <h3 class="font-display font-black text-xl text-[#1C293C] dark:text-white uppercase mb-1">Table of Contents</h3>
+                                        <p class="text-xs font-semibold text-[#1C293C]/70 dark:text-slate-400">Total PDF pages: <strong class="text-[#1C293C] dark:text-white">{totalPages}</strong>. Click row to map to <strong class="bg-[#FDC800] px-1 py-0.5 border border-[#1C293C] text-[#1C293C]">{STATEMENTS[selectedStatementKey]}</strong>.</p>
+                                    </div>
+                                    
+                                    {/* Search */}
+                                    <div class="relative w-full sm:w-64">
+                                        <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-500">
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-4 h-4 text-[#1C293C] dark:text-white">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.604 10.604z" />
+                                            </svg>
+                                        </span>
+                                        <input 
+                                            type="text" 
+                                            value={searchQuery}
+                                            onChange={(e) => setSearchQuery(e.target.value)}
+                                            placeholder="Filter section titles..." 
+                                            class="w-full bg-[#FBFBF9] dark:bg-[#121212] border-2 border-[#1C293C] dark:border-white focus:bg-[#FDC800]/5 rounded-lg pl-9 pr-3 py-2 text-xs font-bold text-[#1C293C] dark:text-white placeholder-slate-400 transition-all outline-none"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div class="flex-grow overflow-auto border-4 border-[#1C293C] dark:border-white rounded-xl bg-[#FBFBF9] dark:bg-[#121212] neo-shadow-sm">
+                                    <table class="w-full text-left text-xs border-collapse">
+                                        <thead class="bg-[#432DD7] text-white sticky top-0 border-b-4 border-[#1C293C] dark:border-white font-black uppercase tracking-wider text-[10px]">
+                                            <tr>
+                                                <th class="p-3.5 border-r-2 border-[#1C293C] dark:border-white">Section Title</th>
+                                                <th class="p-3.5 border-r-2 border-[#1C293C] dark:border-white">Report Page</th>
+                                                <th class="p-3.5 border-r-2 border-[#1C293C] dark:border-white bg-[#FDC800] text-[#1C293C]">PDF Page</th>
+                                                <th class="p-3.5">Source TOC p.</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y-2 divide-slate-200 dark:divide-zinc-800 text-[#1C293C] dark:text-[#F3F4F6] font-semibold">
+                                            {filteredToc.length > 0 ? (
+                                                filteredToc.map((entry, idx) => {
+                                                     const estPage = Math.floor(entry.page_number * scale) + offset;
+                                                     const isOutOfRange = estPage <= 0 || estPage > totalPages;
+                                                    
+                                                     return (
+                                                        <tr 
+                                                            key={idx} 
+                                                            onClick={() => applyTocEntryToMapping(entry)}
+                                                            class="hover:bg-[#FDC800]/10 dark:hover:bg-[#FDC800]/20 cursor-pointer active:bg-[#FDC800]/25 dark:active:bg-[#FDC800]/30 transition-colors border-b border-slate-200 dark:border-zinc-800"
+                                                        >
+                                                            <td class="p-3.5 font-bold border-r-2 border-slate-200 dark:border-zinc-800">{entry.section_name}</td>
+                                                            <td class="p-3.5 border-r-2 border-slate-200 dark:border-zinc-800">Page {entry.page_number}</td>
+                                                            <td class="p-3.5 font-extrabold border-r-2 border-slate-200 dark:border-zinc-800 text-[#432DD7] dark:text-[#FDC800]">
+                                                                {isOutOfRange ? <span class="text-[#DC2626] dark:text-red-400 font-bold">Out of bounds</span> : `Page ${estPage}`}
+                                                            </td>
+                                                            <td class="p-3.5 text-slate-500 dark:text-slate-400">
+                                                                Page {entry.source_page}
+                                                                {!isOutOfRange && (
+                                                                    <button 
+                                                                        onClick={(e) => openPreview(e, estPage)}
+                                                                        class="ml-3 text-[10px] bg-slate-200 dark:bg-zinc-700 text-[#1C293C] dark:text-white px-2 py-1 rounded border border-[#1C293C] dark:border-white font-bold hover:bg-[#FDC800] dark:hover:bg-[#FDC800] hover:text-[#1C293C] transition-colors"
+                                                                    >
+                                                                        Preview
+                                                                    </button>
+                                                                )}
+                                                            </td>
+                                                        </tr>
+                                                     );
+                                                })
+                                            ) : (
+                                                <tr>
+                                                    <td colspan="4" class="p-8 text-center text-slate-400 dark:text-zinc-600 font-bold">
+                                                        No Table of Contents entries found.
+                                                    </td>
+                                                </tr>
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* COMPLETED / DOWNLOAD STAGE - FULL WINDOW PREVIEW */}
+                    {stage === 'completed' && (
+                        <div class="flex-grow flex gap-6 h-[calc(100vh-120px)] w-full">
+                            {/* SIDEBAR: File List */}
+                            <div class="w-1/4 min-w-[250px] bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-3xl p-6 neo-shadow-lg flex flex-col gap-4 overflow-y-auto">
+                                <h3 class="font-display font-black text-xl text-[#1C293C] dark:text-white uppercase border-b-2 border-slate-200 dark:border-zinc-800 pb-2">Extracted Files</h3>
+                                
+                                <div class="flex flex-col gap-2">
+                                    {extractedFiles.map(file => {
+                                        const isSelected = selectedPreviewFile === file;
+                                        return (
+                                            <button 
+                                                key={file}
+                                                onClick={() => loadPreview(file)}
+                                                class={`text-left p-3 rounded-xl border-2 transition-all ${
+                                                    isSelected 
+                                                    ? 'bg-[#FDC800] border-[#1C293C] text-[#1C293C] font-black neo-shadow-sm' 
+                                                    : 'bg-[#FBFBF9] dark:bg-[#121212] border-transparent hover:border-[#1C293C] dark:hover:border-white text-slate-700 dark:text-slate-300 font-bold'
+                                                }`}
+                                            >
+                                                <div class="truncate text-sm">{file}</div>
+                                                <div class="text-[10px] uppercase opacity-70 mt-1">{file.split('.').pop()}</div>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                                
+                                <div class="mt-auto pt-6 border-t-2 border-slate-200 dark:border-zinc-800 flex flex-col gap-3">
+                                    <a 
+                                        href={`/download/${jobId}`} 
+                                        class="w-full text-center bg-[#16A34A] hover:bg-[#15803d] text-white py-3 border-4 border-[#1C293C] dark:border-white rounded-xl font-display font-black text-sm neo-shadow-sm hover:translate-x-[-1px] hover:translate-y-[-1px] transition-all"
+                                    >
+                                        Download ZIP
+                                    </a>
+                                    <button 
+                                        onClick={() => { setStage('upload'); setJobId(null); }}
+                                        class="w-full text-center bg-white dark:bg-[#1E1E1E] hover:bg-slate-50 dark:hover:bg-zinc-800 text-[#1C293C] dark:text-white py-3 border-2 border-[#1C293C] dark:border-white rounded-xl font-bold text-sm transition-all"
+                                    >
+                                        Upload New
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            {/* MAIN AREA: Preview Pane */}
+                            <div class="flex-grow bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-3xl neo-shadow-lg overflow-hidden flex flex-col">
+                                <div class="bg-slate-100 dark:bg-[#121212] border-b-2 border-[#1C293C] dark:border-white p-4 flex justify-between items-center">
+                                    <span class="font-display font-black text-[#1C293C] dark:text-white">{selectedPreviewFile || 'Select a file to preview'}</span>
+                                    {selectedPreviewFile && (
+                                        <div class="flex gap-2">
+                                            <button onClick={() => setShowFlagModal(true)} class="text-xs bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 px-3 py-1.5 rounded-lg font-bold hover:bg-red-200 dark:hover:bg-red-800/50 transition-colors">Flag Issue</button>
+                                            <a href={`/output/${jobId}/${selectedPreviewFile}`} target="_blank" class="text-xs bg-[#1C293C] text-white px-3 py-1.5 rounded-lg font-bold hover:bg-black transition-colors">Open in New Tab</a>
+                                        </div>
+                                    )}
+                                </div>
+                                
+                                <div class="flex-grow overflow-auto p-2 bg-slate-50 dark:bg-[#1A1A1A]">
+                                    {!selectedPreviewFile ? (
+                                        <div class="h-full flex items-center justify-center text-slate-400 font-bold">No file selected</div>
+                                    ) : selectedPreviewFile.endsWith('.pdf') ? (
+                                        <iframe src={`/output/${jobId}/${selectedPreviewFile}#toolbar=0`} class="w-full h-full border-0 rounded-xl"></iframe>
+                                    ) : selectedPreviewFile.endsWith('.md') && mdData ? (
+                                        <div class="p-4 bg-white dark:bg-[#1E1E1E] border-2 border-[#1C293C] dark:border-white m-4 rounded-lg overflow-auto">
+                                            <pre class="text-sm font-mono whitespace-pre-wrap text-[#1C293C] dark:text-slate-300">
+                                                {mdData}
+                                            </pre>
+                                        </div>
+                                    ) : null}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* FAILED STATE */}
+                    {stage === 'failed' && (
+                        <div class="max-w-md mx-auto w-full my-auto text-center bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-2xl p-10 neo-shadow-lg">
+                            <div class="bg-[#DC2626] border-4 border-[#1C293C] dark:border-white text-white w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6 neo-shadow-sm">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor" class="w-8 h-8">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                                </svg>
+                            </div>
+                            <h3 class="font-display font-black text-xl text-[#1C293C] dark:text-white mb-2 uppercase">Processing Failed</h3>
+                            <p class="text-xs font-semibold text-[#DC2626] mb-8 bg-[#DC2626]/10 dark:bg-red-950/20 border-2 border-[#1C293C] dark:border-white rounded-xl p-4">{errorMsg}</p>
+                            
+                            <button 
+                                onClick={() => {
+                                    setStage('upload');
+                                    setErrorMsg('');
+                                    setJobId(null);
+                                }}
+                                class="w-full bg-white dark:bg-[#1E1E1E] hover:bg-slate-50 dark:hover:bg-zinc-800 text-[#1C293C] dark:text-white font-bold border-2 border-[#1C293C] dark:border-white py-3 rounded-xl shadow-[3px_3px_0px_0px_#1C293C] dark:shadow-[3px_3px_0px_0px_#FDC800] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[2px_2px_0px_0px_#1C293C] dark:hover:shadow-[2px_2px_0px_0px_#FDC800] active:translate-x-[3px] active:translate-y-[3px] active:shadow-none transition-all duration-100"
+                            >
+                                Try Again
+                            </button>
+                        </div>
+                    )}
+
+                    <footer class="text-center text-xs font-bold text-[#1C293C]/50 dark:text-slate-400 mt-8 border-t-2 border-slate-200 dark:border-zinc-800 pt-5">
+                        <p>&copy; 2026 FinReportExtract &bull; Neobrutalism UI style registry pulled from typeui.sh</p>
+                    </footer>
+
+                    {/* PDF PREVIEW MODAL */}
+                    {showPreviewModal && (
+                        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setShowPreviewModal(false)}>
+                            <div class="bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-2xl overflow-hidden max-h-[90vh] max-w-4xl w-full flex flex-col neo-shadow-lg" onClick={e => e.stopPropagation()}>
+                                <div class="bg-[#1C293C] dark:bg-[#121212] p-4 flex justify-between items-center text-white border-b-4 border-[#1C293C] dark:border-white">
+                                    <h3 class="font-display font-black text-xl uppercase">Preview - Page {previewPage}</h3>
+                                    <button onClick={() => setShowPreviewModal(false)} class="hover:text-[#FDC800]">
+                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-6 h-6"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                                    </button>
+                                </div>
+                                <div class="overflow-auto bg-slate-100 dark:bg-zinc-900 p-4 flex justify-center flex-grow">
+                                    <canvas ref={canvasRef} class="border-2 border-[#1C293C] dark:border-white bg-white shadow-lg max-w-full"></canvas>
+                                </div>
+                                <div class="bg-white dark:bg-[#1E1E1E] p-4 border-t-4 border-[#1C293C] dark:border-white flex justify-between items-center">
+                                    <button onClick={() => setPreviewPage(p => Math.max(1, p - 1))} class="px-4 py-2 bg-slate-200 dark:bg-zinc-700 font-bold rounded border-2 border-[#1C293C] dark:border-white hover:bg-[#FDC800] dark:hover:bg-[#FDC800] hover:text-[#1C293C] transition-colors">Previous Page</button>
+                                    <span class="text-sm font-bold text-[#1C293C] dark:text-white">Page {previewPage} / {totalPages}</span>
+                                    <button onClick={() => setPreviewPage(p => Math.min(totalPages, p + 1))} class="px-4 py-2 bg-slate-200 dark:bg-zinc-700 font-bold rounded border-2 border-[#1C293C] dark:border-white hover:bg-[#FDC800] dark:hover:bg-[#FDC800] hover:text-[#1C293C] transition-colors">Next Page</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {/* Flag Issue Modal */}
+                    {showFlagModal && (
+                        <div class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                            <div class="bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-2xl p-6 w-full max-w-md neo-shadow-lg">
+                                <h3 class="font-display font-black text-xl mb-4 text-[#1C293C] dark:text-white">Report an Issue</h3>
+                                <p class="text-sm text-slate-500 mb-4">What's wrong with <span class="font-bold">{selectedPreviewFile}</span>?</p>
+                                
+                                {flagSuccessMsg ? (
+                                    <div class="bg-green-100 text-green-700 p-3 rounded-xl font-bold text-center mb-4 border border-green-300">
+                                        {flagSuccessMsg}
+                                    </div>
+                                ) : (
+                                    <>
+                                        <textarea 
+                                            value={flagIssueDesc}
+                                            onChange={(e) => setFlagIssueDesc(e.target.value)}
+                                            class="w-full bg-slate-50 dark:bg-[#121212] border-2 border-[#1C293C] dark:border-white rounded-xl p-3 text-sm min-h-[100px] mb-4 outline-none focus:border-[#FDC800] dark:focus:border-[#FDC800] transition-colors"
+                                            placeholder="e.g. The particulars column overflowed into the notes column..."
+                                        ></textarea>
+                                        <div class="flex gap-3 justify-end">
+                                            <button onClick={() => setShowFlagModal(false)} class="px-4 py-2 font-bold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">Cancel</button>
+                                            <button onClick={submitFlag} class="bg-[#1C293C] dark:bg-white text-white dark:text-[#1C293C] font-bold px-4 py-2 rounded-xl neo-shadow-sm hover:translate-x-[-1px] hover:translate-y-[-1px]">Submit</button>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

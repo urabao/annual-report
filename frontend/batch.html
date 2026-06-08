@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Batch Benchmarking - Annual Report Extractor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=Outfit:wght@400;700;900&display=swap');
+        :root {
+            --primary: #FDC800;
+            --dark: #1C293C;
+        }
+        body { font-family: 'Inter', sans-serif; }
+        h1, h2, h3 { font-family: 'Outfit', sans-serif; }
+        .neo-shadow { box-shadow: 4px 4px 0px 0px rgba(28, 41, 60, 1); }
+        .dark .neo-shadow { box-shadow: 4px 4px 0px 0px rgba(255, 255, 255, 1); }
+    </style>
+</head>
+<body class="bg-slate-50 dark:bg-[#121212] text-slate-900 dark:text-slate-100 min-h-screen p-8">
+
+    <div class="max-w-4xl mx-auto space-y-8">
+        <div class="flex justify-between items-center bg-white dark:bg-[#1E1E1E] p-6 rounded-2xl border-4 border-[#1C293C] dark:border-white neo-shadow">
+            <div>
+                <h1 class="text-3xl font-black text-[#1C293C] dark:text-white uppercase tracking-tight">Batch Benchmarking</h1>
+                <p class="text-slate-500 mt-1 font-medium">Drop multiple annual reports here to analyze extraction heuristics.</p>
+            </div>
+            <a href="/" class="px-4 py-2 font-bold bg-slate-200 dark:bg-slate-800 rounded-xl hover:bg-slate-300 dark:hover:bg-slate-700 transition-colors">Back to Main Tool</a>
+        </div>
+
+        <div class="bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-3xl p-8 neo-shadow">
+            <div id="dropzone" class="border-4 border-dashed border-slate-300 dark:border-slate-700 rounded-2xl p-12 text-center cursor-pointer hover:border-primary transition-colors">
+                <input type="file" id="fileInput" multiple accept="application/pdf" class="hidden">
+                <h3 class="text-2xl font-black mb-2">Drag & Drop PDFs Here</h3>
+                <p class="text-slate-500 font-bold">or click to browse</p>
+                <div id="fileList" class="mt-4 text-sm font-medium text-left space-y-1"></div>
+            </div>
+            
+            <button id="startBtn" class="w-full mt-6 bg-primary text-black font-black text-xl py-4 rounded-xl neo-shadow hover:translate-x-[-2px] hover:translate-y-[-2px] transition-all hidden">
+                Start Benchmarking
+            </button>
+        </div>
+
+        <div id="resultsArea" class="hidden space-y-4">
+            <h2 class="text-2xl font-black mb-4">Benchmark Results</h2>
+            <div id="resultsLog" class="bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-3xl p-6 space-y-4 neo-shadow max-h-[600px] overflow-y-auto font-mono text-sm">
+                <!-- Results injected here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const startBtn = document.getElementById('startBtn');
+        const resultsArea = document.getElementById('resultsArea');
+        const resultsLog = document.getElementById('resultsLog');
+        let selectedFiles = [];
+
+        dropzone.addEventListener('click', () => fileInput.click());
+        dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('border-primary'); });
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('border-primary'));
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('border-primary');
+            handleFiles(e.dataTransfer.files);
+        });
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+        function handleFiles(files) {
+            for (let f of files) {
+                if (f.type === 'application/pdf') selectedFiles.push(f);
+            }
+            fileList.innerHTML = selectedFiles.map(f => `<div>📄 ${f.name}</div>`).join('');
+            if (selectedFiles.length > 0) startBtn.classList.remove('hidden');
+        }
+
+        startBtn.addEventListener('click', async () => {
+            startBtn.disabled = true;
+            startBtn.innerText = 'Uploading & Benchmarking...';
+            resultsArea.classList.remove('hidden');
+            resultsLog.innerHTML = '<div class="animate-pulse">Initializing benchmark suite...</div>';
+
+            const formData = new FormData();
+            selectedFiles.forEach(f => formData.append('files', f));
+
+            try {
+                const res = await fetch('/api/benchmark', { method: 'POST', body: formData });
+                const data = await res.json();
+                
+                resultsLog.innerHTML = '';
+                
+                for (const [filename, result] of Object.entries(data.results)) {
+                    let html = `<div class="p-4 rounded-xl ${result.success ? 'bg-green-50 dark:bg-green-900/20 border-l-4 border-green-500' : 'bg-red-50 dark:bg-red-900/20 border-l-4 border-red-500'}">`;
+                    html += `<div class="font-bold mb-2">${filename}</div>`;
+                    
+                    if (result.error) {
+                        html += `<div class="text-red-500">${result.error}</div>`;
+                    } else {
+                        result.files.forEach(f => {
+                            const icon = f.passed ? '✅' : '❌';
+                            const color = f.passed ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400';
+                            html += `<div class="${color} ml-4">• ${icon} ${f.file}: ${f.message}</div>`;
+                        });
+                    }
+                    html += `</div>`;
+                    resultsLog.innerHTML += html;
+                }
+            } catch (e) {
+                resultsLog.innerHTML = `<div class="text-red-500">Fatal error occurred: ${e.message}</div>`;
+            }
+
+            startBtn.innerText = 'Start Benchmarking';
+            startBtn.disabled = false;
+        });
+    </script>
+</body>
+</html>

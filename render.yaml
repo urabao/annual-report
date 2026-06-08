@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: annual-report-extractor
+    env: docker
+    region: frankfurt
+    plan: starter # PyMuPDF and pdfplumber require memory; free tier (512MB) may OOM on large PDFs. Starter (512MB) or Standard (2GB) is recommended.
+    dockerCommand: "uvicorn backend.app:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PORT
+        value: "8000"
