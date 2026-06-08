@@ -411,23 +411,42 @@
             }, [selectedStatementKey, mappings, stage]);
 
             // Crop Box Drawing Handlers
-            const handleCropMouseDown = (e) => {
-                e.preventDefault();
+            const handleCropStart = (e) => {
+                // Prevent scrolling when drawing on touch devices
+                if (e.touches && e.touches.length > 0) {
+                    // We don't preventDefault here because it might block scrolling entirely, 
+                    // but we might want to if the user is explicitly interacting with the image.
+                    // For now, let's keep it simple.
+                } else {
+                    e.preventDefault();
+                }
+                
                 if (!previewImgRef.current) return;
                 const rect = previewImgRef.current.getBoundingClientRect();
-                const xPct = (e.clientX - rect.left) / rect.width;
-                const yPct = (e.clientY - rect.top) / rect.height;
+                
+                // Get coordinates from either mouse or touch
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                
+                const xPct = (clientX - rect.left) / rect.width;
+                const yPct = (clientY - rect.top) / rect.height;
                 
                 setIsDrawingCrop(true);
                 setCropStart({x: xPct, y: yPct});
                 setCurrentCrop([xPct, yPct, xPct, yPct]);
             };
 
-            const handleCropMouseMove = (e) => {
+            const handleCropMove = (e) => {
                 if (!isDrawingCrop || !previewImgRef.current) return;
+                if (e.touches) e.preventDefault(); // Prevent scrolling while dragging crop
+                
                 const rect = previewImgRef.current.getBoundingClientRect();
-                let x = e.clientX - rect.left;
-                let y = e.clientY - rect.top;
+                
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                
+                let x = clientX - rect.left;
+                let y = clientY - rect.top;
                 
                 // Clamp
                 x = Math.max(0, Math.min(x, rect.width));
@@ -444,7 +463,7 @@
                 ]);
             };
 
-            const handleCropMouseUp = () => {
+            const handleCropEnd = () => {
                 if (isDrawingCrop && currentCrop) {
                     setIsDrawingCrop(false);
                     // Save if valid size
@@ -639,7 +658,7 @@
 
                     {/* TOC PREVIEW & ADJUSTER STAGE */}
                     {stage === 'toc_preview' && (
-                        <div class="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-8 my-auto items-stretch h-[calc(100vh-200px)] min-h-[550px]">
+                        <div class="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 my-auto items-stretch min-h-[550px] pb-10">
                             {/* Left Column: Target Mappings Adjuster */}
                             <div class="lg:col-span-3 flex flex-col justify-between bg-white dark:bg-[#1E1E1E] border-4 border-[#1C293C] dark:border-white rounded-2xl p-4 neo-shadow-lg overflow-hidden">
                                 <div class="flex-grow overflow-y-auto pr-1">
@@ -722,9 +741,9 @@
 
                                 <button 
                                     onClick={triggerExtraction}
-                                    class="w-full bg-[#FDC800] hover:bg-[#ffe14d] active:bg-[#e6b600] text-[#1C293C] font-display font-black text-xs py-3 border-4 border-[#1C293C] dark:border-white rounded-xl neo-shadow-md transition-all duration-100 mt-4 uppercase"
+                                    class="w-full bg-[#FDC800] hover:bg-[#ffe14d] active:bg-[#e6b600] text-[#1C293C] font-display font-black text-sm lg:text-xs py-4 lg:py-3 border-4 border-[#1C293C] dark:border-white rounded-xl neo-shadow-md transition-all duration-100 mt-4 uppercase"
                                 >
-                                    Extract as PDF & Markdown
+                                    Stitch Trimmed Report
                                 </button>
                             </div>
 
@@ -747,12 +766,16 @@
                                                 ref={previewImgRef}
                                                 src={`/page_preview/${jobId}/${previewPage}`} 
                                                 alt={`Preview of Page ${previewPage}`} 
-                                                class="object-contain max-h-[calc(100vh-350px)] max-w-full cursor-crosshair border border-slate-300 dark:border-slate-700"
+                                                class="object-contain max-h-[calc(100vh-350px)] max-w-full cursor-crosshair border border-slate-300 dark:border-slate-700 touch-none"
                                                 draggable="false"
-                                                onMouseDown={handleCropMouseDown}
-                                                onMouseMove={handleCropMouseMove}
-                                                onMouseUp={handleCropMouseUp}
-                                                onMouseLeave={handleCropMouseUp}
+                                                onMouseDown={handleCropStart}
+                                                onMouseMove={handleCropMove}
+                                                onMouseUp={handleCropEnd}
+                                                onMouseLeave={handleCropEnd}
+                                                onTouchStart={handleCropStart}
+                                                onTouchMove={handleCropMove}
+                                                onTouchEnd={handleCropEnd}
+                                                onTouchCancel={handleCropEnd}
                                             />
                                             
                                             {/* Render active or saved crop box */}

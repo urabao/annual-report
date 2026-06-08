@@ -382,6 +382,7 @@ async def api_benchmark(files: List[UploadFile] = File(...)):
 import os
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(BACKEND_DIR)
+
 frontend_dir = os.path.join(BASE_DIR, "frontend")
 os.makedirs(frontend_dir, exist_ok=True)
 

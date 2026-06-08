@@ -4,7 +4,6 @@ import zipfile
 import logging
 import math
 from typing import Dict, List, Tuple, Optional, Any
-import pdfplumber
 import fitz  # PyMuPDF
 from collections import Counter
 
@@ -1093,13 +1092,6 @@ class AnnualReportExtractor:
                     
                 logger.info(f"Appended {key} (pages {start_1}-{end_1}) to master trimmed PDF")
                 
-                # Table Extraction
-                if key not in ["mda", "directors_report", "auditors_report"]:
-                    md_result = self.extract_tables_to_markdown(key, start_phys, end_phys, output_dir, crop_rect, user_crop)
-                    if md_result:
-                        md_filename, md_filepath = md_result
-                        extracted_files.append((md_filename, md_filepath))
-                        
             except Exception as e:
                 logger.error(f"Failed to extract {key}: {e}", exc_info=True)
                 
@@ -1122,144 +1114,3 @@ class AnnualReportExtractor:
             
         return zip_path, [f[0] for f in extracted_files]
 
-    def extract_tables_to_markdown(self, key: str, start_phys: int, end_phys: int, output_dir: str, split_crop=None, user_crop=None) -> Optional[Tuple[str, str]]:
-        """Extract tables from the physical page range and save as Markdown.
-        user_crop can now be a dict mapping string physical page indices to crop arrays [x0,y0,x1,y1].
-        """
-        md_filename = f"{key}.md"
-        md_filepath = os.path.join(output_dir, md_filename)
-        
-        md_content = f"# {key.replace('_', ' ').title()}\n\n"
-        has_data = False
-        
-        try:
-            with pdfplumber.open(self.pdf_path) as pdf:
-                # Pass 1: Collect ALL amount x-coordinates across all pages to form a global column boundary
-                global_num_x_coords = []
-                import re
-                
-                # We need a reference bbox. We'll use the first processed page's bbox.
-                ref_bbox = None
-                
-                for p in range(start_phys, end_phys):
-                    if p >= len(pdf.pages): continue
-                    page = pdf.pages[p]
-                    if ref_bbox is None:
-                        ref_bbox = page.bbox
-                        
-                    crop_to_use = split_crop
-                    if isinstance(user_crop, dict) and str(p) in user_crop:
-                        crop_to_use = fitz.Rect(*user_crop[str(p)])
-                    elif isinstance(user_crop, list) and len(user_crop) == 4:
-                        crop_to_use = fitz.Rect(*user_crop)
-                        
-                    if crop_to_use is not None:
-                        crop_x0 = max(0, min(crop_to_use.x0, page.width))
-                        crop_y0 = max(0, min(crop_to_use.y0, page.height))
-                        crop_x1 = max(0, min(crop_to_use.x1, page.width))
-                        crop_y1 = max(0, min(crop_to_use.y1, page.height))
-                        if crop_x0 < crop_x1 and crop_y0 < crop_y1:
-                            page = page.crop((crop_x0, crop_y0, crop_x1, crop_y1))
-                            
-                    words = page.extract_words()
-                    for w in words:
-                        if user_crop is None:
-                            if w['top'] < page.bbox[1] + 50 or w['bottom'] > page.bbox[3] - 100:
-                                continue
-                        text = w['text'].replace(',', '').replace('(', '').replace(')', '').strip()
-                        # Allow numbers or small integers (like Note Nos) near the middle
-                        is_amount = bool(re.search(r'[,\.]', w['text'])) or len(text) >= 3
-                        is_note = re.match(r'^\d{1,2}[a-zA-Z]?$', text)
-                        
-                        if (is_amount and re.match(r'^-?\d+(\.\d+)?$', text) and w['x0'] > page.bbox[0] + page.width * 0.4) or \
-                           (is_note and page.bbox[0] + page.width * 0.35 < w['x0'] < page.bbox[0] + page.width * 0.6):
-                            global_num_x_coords.append(w['x0'])
-
-                # Compute global explicit vertical lines
-                explicit_lines = [ref_bbox[0]] if ref_bbox else [0]
-                if global_num_x_coords:
-                    global_num_x_coords.sort()
-                    clusters = []
-                    curr_cluster = [global_num_x_coords[0]]
-                    for x in global_num_x_coords[1:]:
-                        if x - curr_cluster[-1] < 40:
-                            curr_cluster.append(x)
-                        else:
-                            clusters.append(curr_cluster)
-                            curr_cluster = [x]
-                    clusters.append(curr_cluster)
-                    
-                    first_num_x = min(clusters[0])
-                    explicit_lines.append(first_num_x - 15)
-                    
-                    for c in clusters[1:]:
-                        explicit_lines.append(min(c) - 15)
-                else:
-                    if ref_bbox:
-                        explicit_lines.extend([ref_bbox[0] + ref_bbox[2] * 0.55, ref_bbox[0] + ref_bbox[2] * 0.70, ref_bbox[0] + ref_bbox[2] * 0.85])
-                        
-                if ref_bbox:
-                    explicit_lines.append(ref_bbox[2])
-                    
-                # Pass 2: Extract tables per page using the global lines
-                ts = {
-                    "vertical_strategy": "explicit",
-                    "explicit_vertical_lines": explicit_lines,
-                    "horizontal_strategy": "text",
-                    "snap_tolerance": 5,
-                }
-                
-                is_first_page_table = True
-                for p in range(start_phys, end_phys):
-                    if p >= len(pdf.pages): continue
-                    page = pdf.pages[p]
-                    
-                    crop_to_use = split_crop
-                    if isinstance(user_crop, dict) and str(p) in user_crop:
-                        crop_to_use = fitz.Rect(*user_crop[str(p)])
-                    elif isinstance(user_crop, list) and len(user_crop) == 4:
-                        crop_to_use = fitz.Rect(*user_crop)
-                        
-                    if crop_to_use is not None:
-                        crop_x0 = max(0, min(crop_to_use.x0, page.width))
-                        crop_y0 = max(0, min(crop_to_use.y0, page.height))
-                        crop_x1 = max(0, min(crop_to_use.x1, page.width))
-                        crop_y1 = max(0, min(crop_to_use.y1, page.height))
-                        if crop_x0 < crop_x1 and crop_y0 < crop_y1:
-                            page = page.crop((crop_x0, crop_y0, crop_x1, crop_y1))
-                            
-                    tables = page.extract_tables(table_settings=ts)
-                    for table in tables:
-                        if not table: continue
-                        has_data = True
-                        
-                        header = table[0]
-                        if is_first_page_table:
-                            md_content += "|" + "|".join([str(c).replace('\n', ' ') if c else " " for c in header]) + "|\n"
-                            md_content += "|" + "|".join(["---" for _ in header]) + "|\n"
-                            is_first_page_table = False
-                        
-                        start_row_idx = 1 if not is_first_page_table else 0 
-                        # Only skip header on subsequent pages if it matches the first row exactly
-                        if not is_first_page_table:
-                            first_row_cleaned = [str(c).replace('\n', ' ').strip().lower() if c else "" for c in table[0]]
-                            if sum(1 for c in first_row_cleaned if "particulars" in c or "note" in c or "march" in c or "20" in c) > 0:
-                                start_row_idx = 1
-                            else:
-                                start_row_idx = 0
-                                
-                        for row in table[start_row_idx:]:
-                            cleaned_row = [str(cell).replace('\n', ' ') if cell else " " for cell in row]
-                            if any(c.strip() for c in cleaned_row):
-                                md_content += "|" + "|".join(cleaned_row) + "|\n"
-                                
-                if not has_data:
-                    return None
-                    
-                with open(md_filepath, 'w', encoding='utf-8') as f:
-                    f.write(md_content)
-                    
-                return (md_filename, md_filepath)
-        except Exception as e:
-            logger.error(f"Failed table extraction for {key}: {e}")
-            return None
