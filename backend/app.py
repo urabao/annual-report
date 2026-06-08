@@ -379,8 +379,9 @@ async def api_benchmark(files: List[UploadFile] = File(...)):
     return {"results": results}
 
 # Static file serving
-BASE_DIR = "/Users/arham/.gemini/antigravity/scratch/annual-report-extractor"
-
+import os
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(BACKEND_DIR)
 frontend_dir = os.path.join(BASE_DIR, "frontend")
 os.makedirs(frontend_dir, exist_ok=True)
 
